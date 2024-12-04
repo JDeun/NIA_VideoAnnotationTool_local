@@ -14,7 +14,7 @@ from PyQt5.QtWidgets import (
     QProgressBar, QFrame, QSplitter, QStyle, QMessageBox,
     QLineEdit, QDialog, QToolTip, QButtonGroup, QRadioButton,
     QGraphicsDropShadowEffect, QSizePolicy, QShortcut,
-    QGridLayout
+    QGridLayout, QSlider
 )
 from PyQt5.QtCore import (
     Qt, QTimer, QPointF, QRectF, QSize, QPoint
@@ -22,7 +22,7 @@ from PyQt5.QtCore import (
 from PyQt5.QtGui import (
     QImage, QPixmap, QPainter, QColor, QPen, QPainterPath,
     QPolygonF, QLinearGradient, QFont, QKeySequence,
-    QPolygon
+    QPolygon, QBrush
 )
 
 # 로깅 설정
@@ -208,12 +208,16 @@ class TimelineWidget(QFrame):
                     painter.setPen(QPen(color.darker(110), 1))
                     painter.drawPath(path)
                     
-                    # 키프레임 마커 그리기
+                    # 키프레임 마커 그리기 부분 수정
                     keyframe_x = int((segment.keyframe / self.total_frames) * width)
-                    marker_height = height/6
+                    marker_height = int(height/6)
                     painter.setPen(QPen(Qt.white, 2))
-                    painter.drawLine(keyframe_x, height/3 + marker_height, 
-                                    keyframe_x, 2*height/3 - marker_height)
+                    painter.drawLine(
+                        keyframe_x, 
+                        int(height/3 + marker_height), 
+                        keyframe_x, 
+                        int(2*height/3 - marker_height)
+                    )
                     
                 except Exception as e:
                     logger.error(f"Error drawing segment {i}: {str(e)}")
@@ -285,7 +289,7 @@ class SegmentDialog(QDialog):
                     border: none;
                     border-radius: 6px;
                     font-weight: bold;
-                    min-height: 36px;
+                    min-height: 20px;
                 }
             """)
 
@@ -468,6 +472,9 @@ class VideoLabeler(QMainWindow):
         screen = QApplication.primaryScreen().size()
         self.resize(int(screen.width() * 0.8), int(screen.height() * 0.8))
         
+        # 메인 위젯이 키보드 포커스를 가지도록 설정
+        self.setFocusPolicy(Qt.StrongFocus)
+        
         # 틴더 스타일 전역 설정
         self.setStyleSheet("""
             QMainWindow {
@@ -527,6 +534,15 @@ class VideoLabeler(QMainWindow):
         QShortcut(QKeySequence.Save, self, self.save_annotations)
         QShortcut(QKeySequence(Qt.Key_Space), self, self.toggle_play)
         QShortcut(QKeySequence(Qt.Key_M), self, self.mark_segment)
+        self.play_shortcut = Qt.Key_Space
+        self.prev_sec_shortcut = Qt.Key_Left
+        self.next_sec_shortcut = Qt.Key_Right
+        self.prev_frame_shortcut = Qt.Key_Left | Qt.ControlModifier
+        self.next_frame_shortcut = Qt.Key_Right | Qt.ControlModifier
+        self.mark_shortcut = Qt.Key_M
+
+        # UI 초기화
+        self.init_ui()
 
     def setup_shortcuts(self):
         """키보드 단축키 설정"""
@@ -622,8 +638,38 @@ class VideoLabeler(QMainWindow):
     def init_controls(self):
         """컨트롤 섹션 UI 초기화"""
         try:
-            controls = QHBoxLayout()
+            controls = QVBoxLayout()
             controls.setSpacing(8)  # 버튼 간격 설정
+
+            # 비디오 슬라이더 추가
+            self.video_slider = QSlider(Qt.Horizontal)
+            self.video_slider.setStyleSheet("""
+                QSlider::groove:horizontal {
+                    border: 1px solid #ddd;
+                    height: 8px;
+                    background: #ffffff;
+                    margin: 2px 0;
+                    border-radius: 4px;
+                }
+                QSlider::handle:horizontal {
+                    background: #fe3c72;
+                    border: 1px solid #ddd;
+                    width: 18px;
+                    margin: -5px 0;
+                    border-radius: 9px;
+                }
+                QSlider::handle:horizontal:hover {
+                    background: #f28cb1;
+                }
+            """)
+            self.video_slider.setFocusPolicy(Qt.ClickFocus)  # 키보드 포커스 정책 설정
+            self.video_slider.sliderMoved.connect(self.slider_moved)
+            self.video_slider.sliderPressed.connect(self.slider_pressed)
+            self.video_slider.sliderReleased.connect(self.slider_released)
+            controls.addWidget(self.video_slider)
+            
+            # 기존 컨트롤 버튼들을 담을 수평 레이아웃
+            buttons_layout = QHBoxLayout()
             
             # 틴더 스타일 버튼 기본 스타일
             button_style = """
@@ -633,7 +679,7 @@ class VideoLabeler(QMainWindow):
                     padding: 8px 15px;
                     border: 1px solid #ddd;
                     border-radius: 6px;
-                    min-height: 36px;
+                    min-height: 20px;
                     font-size: 13px;
                 }
                 QPushButton:hover {
@@ -649,38 +695,50 @@ class VideoLabeler(QMainWindow):
             self.prev_frame_btn = QPushButton('◀◀ 이전 프레임')
             self.prev_frame_btn.setStyleSheet(button_style)
             self.prev_frame_btn.clicked.connect(lambda: self.move_frame(-1))
-            controls.addWidget(self.prev_frame_btn)
+            buttons_layout.addWidget(self.prev_frame_btn)
             
             # 이전 초
             self.prev_sec_btn = QPushButton('◀ 이전 초')
             self.prev_sec_btn.setStyleSheet(button_style)
             self.prev_sec_btn.clicked.connect(lambda: self.move_second(-1))
-            controls.addWidget(self.prev_sec_btn)
+            buttons_layout.addWidget(self.prev_sec_btn)
             
             # 재생/일시정지
             self.play_btn = QPushButton('재생')
-            self.play_btn.setStyleSheet(button_style.replace('white', '#fe3c72').replace('#424242', 'white'))
+            self.play_btn.setStyleSheet(button_style.replace('background-color: white', 'background-color: #fe3c72') \
+                                .replace('color: #424242', 'color: white') + """
+                QPushButton:hover {
+                    background-color: #f28cb1;
+                    color: white;
+                }
+            """)
             self.play_btn.clicked.connect(self.toggle_play)
-            controls.addWidget(self.play_btn)
+            buttons_layout.addWidget(self.play_btn)
             
             # 다음 초
             self.next_sec_btn = QPushButton('다음 초 ▶')
             self.next_sec_btn.setStyleSheet(button_style)
             self.next_sec_btn.clicked.connect(lambda: self.move_second(1))
-            controls.addWidget(self.next_sec_btn)
+            buttons_layout.addWidget(self.next_sec_btn)
             
             # 다음 프레임
             self.next_frame_btn = QPushButton('다음 프레임 ▶▶')
             self.next_frame_btn.setStyleSheet(button_style)
             self.next_frame_btn.clicked.connect(lambda: self.move_frame(1))
-            controls.addWidget(self.next_frame_btn)
+            buttons_layout.addWidget(self.next_frame_btn)
             
             # 구간 표시
             self.mark_btn = QPushButton('구간 표시')
-            mark_button_style = button_style.replace('white', '#fe3c72').replace('#424242', 'white')
+            mark_button_style = button_style.replace('background-color: white', 'background-color: #fe3c72') \
+                                .replace('color: #424242', 'color: white') + """
+                QPushButton:hover {
+                    background-color: #f28cb1;
+                    color: white;
+                }
+            """
             self.mark_btn.setStyleSheet(mark_button_style)
             self.mark_btn.clicked.connect(self.mark_segment)
-            controls.addWidget(self.mark_btn)
+            buttons_layout.addWidget(self.mark_btn)
             
             # 사용자 수
             user_num_container = QWidget()
@@ -689,7 +747,7 @@ class VideoLabeler(QMainWindow):
                     background-color: white;
                     border: 1px solid #ddd;
                     border-radius: 6px;
-                    min-height: 36px;
+                    min-height: 20px;
                 }
             """)
             user_num_layout = QHBoxLayout(user_num_container)
@@ -707,9 +765,10 @@ class VideoLabeler(QMainWindow):
                     min-width: 50px;
                 }
             """)
+            self.user_num_spin.setFocusPolicy(Qt.ClickFocus)  # 키보드 포커스 정책 설정
             user_num_layout.addWidget(user_num_label)
             user_num_layout.addWidget(self.user_num_spin)
-            controls.addWidget(user_num_container)
+            buttons_layout.addWidget(user_num_container)
             
             # 시간 표시
             self.time_label = QLabel('프레임: 0/0 | 시간: 0.00s')
@@ -720,12 +779,15 @@ class VideoLabeler(QMainWindow):
                     padding: 0 15px;
                     border: 1px solid #ddd;
                     border-radius: 6px;
-                    min-height: 36px;
+                    min-height: 20px;
                     min-width: 250px;
                     qproperty-alignment: AlignCenter;
                 }
             """)
-            controls.addWidget(self.time_label)
+            buttons_layout.addWidget(self.time_label)
+            
+            # buttons_layout을 controls에 추가
+            controls.addLayout(buttons_layout)
             
             return controls
                 
@@ -858,14 +920,14 @@ class VideoLabeler(QMainWindow):
             self.complete_btn.setStyleSheet("""
                 QPushButton {
                     padding: 10px;
-                    background-color: #4CAF50;
+                    background-color: #fe3c72;
                     color: white;
                     border: none;
                     border-radius: 4px;
                     font-weight: bold;
                 }
                 QPushButton:hover {
-                    background-color: #45a049;
+                    background-color: #f28cb1;
                 }
                 QPushButton:disabled {
                     background-color: #cccccc;
@@ -1001,6 +1063,11 @@ class VideoLabeler(QMainWindow):
                         f'프레임: {self.current_frame}/{self.total_frames} | '
                         f'시간: {current_time:.2f}/{total_time:.2f}s'
                     )
+
+                # 슬라이더 업데이트
+                self.video_slider.setMaximum(self.total_frames - 1)
+                if not self.video_slider.isSliderDown():  # 드래그 중이 아닐 때만 업데이트
+                    self.video_slider.setValue(self.current_frame)
                 
                 # 타임라인 업데이트
                 if self.timeline:
@@ -1018,6 +1085,34 @@ class VideoLabeler(QMainWindow):
             logger.error(f"Error updating frame: {str(e)}", exc_info=True)
             self.stop_playback()
             QMessageBox.critical(self, '오류', f'프레임 업데이트 실패: {str(e)}')
+
+    def slider_pressed(self):
+        """슬라이더 드래그 시작"""
+        try:
+            if self.is_playing:
+                self.toggle_play()  # 재생 중이면 일시정지
+        except Exception as e:
+            logger.error(f"Error in slider_pressed: {str(e)}")
+
+    def slider_moved(self):
+        """슬라이더 이동 중"""
+        try:
+            if self.cap:
+                frame = self.video_slider.value()
+                self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame)
+                self.update_frame()
+        except Exception as e:
+            logger.error(f"Error in slider_moved: {str(e)}")
+
+    def slider_released(self):
+        """슬라이더 드래그 종료"""
+        try:
+            if self.cap:
+                frame = self.video_slider.value()
+                self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame)
+                self.update_frame()
+        except Exception as e:
+            logger.error(f"Error in slider_released: {str(e)}")
 
     def stop_playback(self):
         """재생 중지 및 리소스 정리"""
@@ -1129,8 +1224,19 @@ class VideoLabeler(QMainWindow):
     def update_file_list(self):
         """파일 목록 테이블 업데이트"""
         try:
+            # 테이블 기본 설정
             self.file_list.setRowCount(len(self.current_files))
+            self.file_list.setColumnWidth(0, 200)  # 파일명 열 너비
+            self.file_list.setColumnWidth(1, 40)   # 상태 열 너비
+            
+            # 마지막 열 고정 크기 설정
+            self.file_list.horizontalHeader().setSectionResizeMode(2, QHeaderView.Fixed)
+            self.file_list.setColumnWidth(2, 80)   # 버튼 열 너비를 80으로 증가
+            
             for i, file in enumerate(self.current_files):
+                # 행 높이 설정
+                self.file_list.setRowHeight(i, 30)  # 행 높이를 30으로 증가
+                
                 # 파일명
                 name_item = QTableWidgetItem(file.name)
                 name_item.setToolTip(str(file))
@@ -1138,31 +1244,57 @@ class VideoLabeler(QMainWindow):
                 
                 # 상태 (어노테이션 존재 여부)
                 json_path = file.with_suffix('.json')
-                status = '✓' if json_path.exists() else ''
-                status_item = QTableWidgetItem(status)
+                status_item = QTableWidgetItem()
+                if json_path.exists():
+                    try:
+                        with open(json_path, 'r', encoding='utf-8') as f:
+                            data = json.load(f)
+                            if ('meta_data' in data and 'annotations' in data and 
+                                'segmentation' in data['annotations']):
+                                status_item.setText('✓')
+                    except:
+                        pass
                 status_item.setTextAlignment(Qt.AlignCenter)
                 self.file_list.setItem(i, 1, status_item)
                 
-                # 로드 버튼 (현재 파일이 아닌 경우에만)
+                # 현재 실행 중인 파일 행 색상 변경
+                if i == self.current_file_index:
+                    for col in range(3):
+                        item = self.file_list.item(i, col)
+                        if item:
+                            item.setBackground(QBrush(QColor("#f28cb1")))
+                
+                # 로드 버튼
                 if i != self.current_file_index:
+                    container = QWidget()
+                    container_layout = QHBoxLayout(container)
+                    container_layout.setContentsMargins(5, 0, 5, 0)
+                    container_layout.setSpacing(0)
+                    
                     load_btn = QPushButton('로드')
+                    load_btn.setFixedSize(60, 24)
                     load_btn.setStyleSheet("""
                         QPushButton {
-                            padding: 3px 10px;
                             border: 1px solid #ddd;
                             border-radius: 3px;
                             background-color: white;
+                            padding: 0px;
                         }
                         QPushButton:hover {
                             background-color: #f0f0f0;
                         }
+                        QPushButton:pressed {
+                            background-color: #e0e0e0;
+                        }
                     """)
                     load_btn.clicked.connect(lambda x, idx=i: self.load_video(idx))
-                    self.file_list.setCellWidget(i, 2, load_btn)
+                    
+                    container_layout.addWidget(load_btn, alignment=Qt.AlignCenter)
+                    self.file_list.setCellWidget(i, 2, container)
                 else:
-                    # 현재 선택된 파일임을 표시
                     current_item = QTableWidgetItem('현재 파일')
                     current_item.setTextAlignment(Qt.AlignCenter)
+                    current_item.setForeground(QBrush(QColor("#ffffff")))
                     self.file_list.setItem(i, 2, current_item)
                     
         except Exception as e:
@@ -1190,9 +1322,16 @@ class VideoLabeler(QMainWindow):
 
             file_path = self.current_files[index]
             
+            # 기존 비디오 캡처 해제
             if self.cap is not None:
                 self.cap.release()
                 self.cap = None
+
+            # 세그먼트와 타임라인 초기화
+            self.segments = []
+            if self.timeline:
+                self.timeline.segments = []
+                self.timeline.update()
             
             # 파일 존재 확인
             if not file_path.exists():
@@ -1247,15 +1386,93 @@ class VideoLabeler(QMainWindow):
 
             json_path = self.current_files[self.current_file_index].with_suffix('.json')
             if json_path.exists():
+                try:
+                    with open(json_path, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                        
+                    # 필요한 키들이 모두 있는지 확인
+                    if ('meta_data' in data and 'annotations' in data and 
+                        'segmentation' in data['annotations']):
+                        
+                        self.segments = []
+                        for seg in data['annotations'].get('segmentation', []):
+                            if all(key in seg for key in ['start_frame', 'end_frame', 'action_type']):
+                                segment = VideoSegment(
+                                    seg['start_frame'],
+                                    seg['end_frame'],
+                                    seg['action_type']
+                                )
+                                segment.duration = seg.get('duration', 
+                                    segment.end_frame - segment.start_frame)
+                                segment.keyframe = seg.get('keyframe', 
+                                    (segment.start_frame + segment.end_frame) // 2)
+                                segment.keypoints = seg.get('keypoints', [])
+                                self.segments.append(segment)
+
+                        if 'user_num' in data['annotations']:
+                            self.user_num_spin.setValue(data['annotations']['user_num'])
+
+                        logger.info(f"Loaded {len(self.segments)} segments from {json_path}")
+                    else:
+                        self.segments = []
+                        logger.info("Invalid JSON structure")
+
+                except json.JSONDecodeError as e:
+                    logger.error(f"Error loading annotations: {str(e)}")
+                    self.segments = []
+                except Exception as e:
+                    logger.error(f"Error processing annotations: {str(e)}")
+                    self.segments = []
+            else:
+                self.segments = []
+
+            # Timeline 업데이트
+            if self.timeline:
+                self.timeline.segments = self.segments
+                self.timeline.update()
+
+        except Exception as e:
+            logger.error(f"Error in load_annotations: {str(e)}")
+            self.segments = []
+
+    def load_annotations(self):
+        """어노테이션 파일 로드"""
+        try:
+            if self.current_file_index < 0:
+                return
+
+            json_path = self.current_files[self.current_file_index].with_suffix('.json')
+            if not json_path.exists():
+                logger.info(f"No annotation file exists: {json_path}")
+                self.segments = []
+                return
+
+            try:
                 with open(json_path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
-                    
-                    # user_num 설정
-                    self.user_num_spin.setValue(data['annotations']['user_num'])
-                    
-                    # segments 설정
+
+                # 데이터 구조 검증
+                required_keys = ['meta_data', 'additional_info', 'annotations']
+                if not all(key in data for key in required_keys):
+                    logger.error("Missing required keys in JSON data")
                     self.segments = []
-                    for seg in data['annotations']['segmentation']:
+                    return
+
+                annotations = data['annotations']
+                if 'segmentation' not in annotations:
+                    logger.error("Missing segmentation data in annotations")
+                    self.segments = []
+                    return
+
+                # 세그먼트 데이터 로드
+                self.segments = []
+                for seg in annotations['segmentation']:
+                    try:
+                        required_seg_keys = ['start_frame', 'end_frame', 'action_type', 'duration', 'keyframe']
+                        if not all(key in seg for key in required_seg_keys):
+                            logger.warning(f"Skipping segment due to missing keys: {seg}")
+                            continue
+
                         segment = VideoSegment(
                             seg['start_frame'],
                             seg['end_frame'],
@@ -1263,104 +1480,33 @@ class VideoLabeler(QMainWindow):
                         )
                         segment.duration = seg['duration']
                         segment.keyframe = seg['keyframe']
-                        segment.keypoints = seg['keypoints']
+                        segment.keypoints = seg.get('keypoints', [])
                         self.segments.append(segment)
+                    except Exception as e:
+                        logger.error(f"Error processing segment: {str(e)}")
+                        continue
 
-                    # Timeline 업데이트
-                    if self.timeline:
-                        self.timeline.segments = self.segments
-                        self.timeline.total_frames = self.total_frames
-                        self.timeline.update()
-                        
-                    logger.info(f"Loaded {len(self.segments)} segments from {json_path}")
-            else:
-                # 새 파일인 경우 초기화
-                self.segments = []
+                # user_num 설정
+                if 'user_num' in annotations:
+                    self.user_num_spin.setValue(annotations['user_num'])
+
+                logger.info(f"Loaded {len(self.segments)} segments from {json_path}")
+
+                # Timeline 업데이트
                 if self.timeline:
-                    self.timeline.segments = []
+                    self.timeline.segments = self.segments
                     self.timeline.update()
-                logger.info("No existing annotations found")
 
-            self.has_unsaved_changes = False
-            
+            except json.JSONDecodeError as e:
+                logger.error(f"Error parsing JSON file: {str(e)}")
+                self.segments = []
+            except Exception as e:
+                logger.error(f"Error loading annotations: {str(e)}")
+                self.segments = []
+
         except Exception as e:
-            logger.error(f"Error loading annotations: {str(e)}")
-            QMessageBox.critical(self, '오류', f'어노테이션 로드 실패: {str(e)}')
+            logger.error(f"Error in load_annotations: {str(e)}")
             self.segments = []
-            if self.timeline:
-                self.timeline.segments = []
-                self.timeline.update()
-
-    def save_annotations(self):
-        """어노테이션 파일 저장"""
-        try:
-            if self.current_file_index < 0:
-                logger.warning("No file selected for saving annotations")
-                return
-
-            file_path = self.current_files[self.current_file_index]
-            logger.info(f"Saving annotations for file: {file_path}")
-
-            annotations = {
-                'meta_data': {
-                    'file_name': file_path.name,
-                    'format': file_path.suffix[1:],
-                    'size': file_path.stat().st_size,
-                    'width_height': [
-                        int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
-                        int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                    ],
-                    'environment': 0,
-                    'frame_rate': self.fps,
-                    'total_frames': self.total_frames,
-                    'camera_height': 170,
-                    'camera_angle': 15
-                },
-                'additional_info': {
-                    'InteractionType': 'Touchscreen'
-                },
-                'annotations': {
-                    'space_context': '',
-                    'user_num': self.user_num_spin.value(),
-                    'target_objects': [
-                        {
-                            'object_id': i,
-                            'age': 1,
-                            'gender': 1,
-                            'disability': 2
-                        } for i in range(self.user_num_spin.value())
-                    ],
-                    'segmentation': [
-                        {
-                            'segment_id': i,
-                            'action_type': seg.action_type,
-                            'start_frame': seg.start_frame,
-                            'end_frame': seg.end_frame,
-                            'duration': seg.duration,
-                            'keyframe': seg.keyframe,
-                            'keypoints': seg.keypoints
-                        } for i, seg in enumerate(self.segments)
-                    ]
-                }
-            }
-
-            json_path = file_path.with_suffix('.json')
-            with open(json_path, 'w', encoding='utf-8') as f:
-                json.dump(annotations, f, ensure_ascii=False, indent=2)
-
-            # Timeline 업데이트
-            if self.timeline:
-                self.timeline.segments = self.segments
-                self.timeline.update()
-
-            logger.info(f"Successfully saved annotations to {json_path}")
-            self.update_file_list()
-            self.has_unsaved_changes = False
-            
-        except Exception as e:
-            logger.error(f"Error saving annotations: {str(e)}")
-            QMessageBox.critical(self, '오류', f'어노테이션 저장 실패: {str(e)}')
-            raise
 
     # VideoLabeler의 mark_segment 메서드 수정
     def mark_segment(self):
@@ -1439,13 +1585,77 @@ class VideoLabeler(QMainWindow):
             logger.error(f"Error editing segment: {str(e)}")
             QMessageBox.critical(self, '오류', f'세그먼트 편집 실패: {str(e)}')
 
+    def save_annotations(self):
+        """어노테이션 저장"""
+        try:
+            if self.current_file_index < 0:
+                logger.warning("No file selected for saving annotations")
+                return False
+
+            file_path = self.current_files[self.current_file_index]
+            json_path = file_path.with_suffix('.json')
+            
+            annotations_data = {
+                'meta_data': {
+                    'file_name': file_path.name,
+                    'format': file_path.suffix[1:],
+                    'size': file_path.stat().st_size,
+                    'width_height': [
+                        int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
+                        int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                    ],
+                    'environment': 0,
+                    'frame_rate': self.fps,
+                    'total_frames': self.total_frames,
+                    'camera_height': 170,
+                    'camera_angle': 15
+                },
+                'additional_info': {
+                    'InteractionType': 'Touchscreen'
+                },
+                'annotations': {
+                    'space_context': '',
+                    'user_num': self.user_num_spin.value(),
+                    'target_objects': [
+                        {
+                            'object_id': i,
+                            'age': 1,
+                            'gender': 1,
+                            'disability': 2
+                        } for i in range(self.user_num_spin.value())
+                    ],
+                    'segmentation': [
+                        {
+                            'segment_id': i,
+                            'action_type': segment.action_type,
+                            'start_frame': segment.start_frame,
+                            'end_frame': segment.end_frame,
+                            'duration': segment.duration,
+                            'keyframe': segment.keyframe,
+                            'keypoints': segment.keypoints
+                        } for i, segment in enumerate(self.segments)
+                    ]
+                }
+            }
+
+            with open(json_path, 'w', encoding='utf-8') as f:
+                json.dump(annotations_data, f, ensure_ascii=False, indent=2)
+                
+            logger.info(f"Successfully saved annotations to {json_path}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Error saving annotations: {str(e)}")
+            QMessageBox.critical(self, '오류', f'어노테이션 저장 실패: {str(e)}')
+            return False        
+
     def complete_annotation(self):
         """어노테이션 작성 완료"""
         try:
             if not self.segments:
                 QMessageBox.warning(self, '경고', '저장할 구간이 없습니다.')
                 return
-                
+                    
             reply = QMessageBox.question(
                 self,
                 '확인',
@@ -1455,8 +1665,9 @@ class VideoLabeler(QMainWindow):
             
             if reply == QMessageBox.Yes:
                 self.save_annotations()
+                self.has_unsaved_changes = False  # 여기에 추가
                 QMessageBox.information(self, '완료', '어노테이션이 저장되었습니다.')
-                
+                    
         except Exception as e:
             logger.error(f"Error completing annotation: {str(e)}")
             QMessageBox.critical(self, '오류', f'작성 완료 실패: {str(e)}')
