@@ -54,15 +54,15 @@ class TimelineWidget(QFrame):
         self.current_frame = 0
         self.marking_start = None
 
-        # 틴더 스타일의 색상 테마
+        # 틴더 스타일의 색상 테마 수정
         self.colors = {
-            0: "#9e9e9e",  # 기타: 회색
+            4: "#9e9e9e",  # 기타: 회색
             1: "#2196f3",  # 탐색: 파란색
             2: "#4caf50",  # 사용: 초록색
             3: "#fe3c72"   # 종료: 틴더 메인 색상
         }
         self.action_names = {
-            0: "기타",
+            4: "기타",
             1: "탐색",
             2: "사용",
             3: "종료"
@@ -333,7 +333,7 @@ class SegmentDialog(QDialog):
             self.action_button_group = QButtonGroup()
             
             actions = {
-                0: '기타',
+                4: '기타',
                 1: '탐색',
                 2: '사용',
                 3: '종료'
@@ -1655,19 +1655,97 @@ class VideoLabeler(QMainWindow):
             if not self.segments:
                 QMessageBox.warning(self, '경고', '저장할 구간이 없습니다.')
                 return
-                    
+
             reply = QMessageBox.question(
                 self,
                 '확인',
                 '작성을 완료하시겠습니까?',
                 QMessageBox.Yes | QMessageBox.No
             )
-            
+
             if reply == QMessageBox.Yes:
-                self.save_annotations()
-                self.has_unsaved_changes = False  # 여기에 추가
+                user_num = self.user_num_spin.value()
+                target_objects = []
+
+                # 각 사용자별 정보 입력
+                for i in range(user_num):
+                    existing_data = None
+                    if hasattr(self, 'current_json') and self.current_json:
+                        if ('annotations' in self.current_json and 
+                            'target_objects' in self.current_json['annotations'] and 
+                            i < len(self.current_json['annotations']['target_objects'])):
+                            existing_data = self.current_json['annotations']['target_objects'][i]
+
+                    dialog = UserInfoDialog(i, existing_data, self)
+                    if dialog.exec_():
+                        user_info = dialog.get_user_info()
+                        target_objects.append(user_info)
+                    else:
+                        return  # 사용자가 취소한 경우
+
+                # 기존 JSON 데이터가 없으면 새로 생성
+                if not hasattr(self, 'current_json') or self.current_json is None:
+                    file_path = self.current_files[self.current_file_index]
+                    self.current_json = {
+                        'meta_data': {
+                            'file_name': file_path.name,
+                            'format': file_path.suffix[1:],
+                            'size': file_path.stat().st_size,
+                            'width_height': [
+                                int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
+                                int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                            ],
+                            'environment': 3,
+                            'frame_rate': self.fps,
+                            'total_frames': self.total_frames,
+                            'camera_height': 165,
+                            'camera_angle': 50
+                        },
+                        'additional_info': {
+                            'InteractionType': 'Touchscreen'
+                        },
+                        'annotations': {
+                            'space_context': '',
+                            'user_num': user_num,
+                            'target_objects': target_objects,
+                            'segmentation': []
+                        }
+                    }
+
+                # JSON 데이터 업데이트
+                self.current_json['annotations']['user_num'] = user_num
+                self.current_json['annotations']['target_objects'] = target_objects
+                
+                # 세그먼트 정보 업데이트
+                segment_data = []
+                for i, segment in enumerate(self.segments):
+                    # 각 사용자별 빈 keypoints 배열을 포함하는 구조 생성
+                    keypoints_data = []
+                    for j in range(user_num):
+                        keypoints_data.append({
+                            "object_id": j,
+                            "keypoints": []  # 기존 keypoints가 있다면 여기에 포함
+                        })
+
+                    segment_data.append({
+                        'segment_id': i,
+                        'action_type': segment.action_type,
+                        'start_frame': segment.start_frame,
+                        'end_frame': segment.end_frame,
+                        'duration': segment.duration,
+                        'keyframe': segment.keyframe,
+                        'keypoints': keypoints_data
+                    })
+                self.current_json['annotations']['segmentation'] = segment_data
+
+                # 파일 저장
+                json_path = self.current_files[self.current_file_index].with_suffix('.json')
+                with open(json_path, 'w', encoding='utf-8') as f:
+                    json.dump(self.current_json, f, ensure_ascii=False, indent=2)
+
+                self.has_unsaved_changes = False
                 QMessageBox.information(self, '완료', '어노테이션이 저장되었습니다.')
-                    
+
         except Exception as e:
             logger.error(f"Error completing annotation: {str(e)}")
             QMessageBox.critical(self, '오류', f'작성 완료 실패: {str(e)}')
@@ -1709,6 +1787,116 @@ class VideoLabeler(QMainWindow):
         except Exception as e:
             logger.error(f"Error during close: {str(e)}")
             event.accept()
+
+class UserInfoDialog(QDialog):
+    def __init__(self, user_id, user_data=None, parent=None):
+        super().__init__(parent)
+        self.user_id = user_id
+        self.user_data = user_data or {"age": 1, "gender": 1, "disability": 2}
+        self.init_ui()
+
+    def init_ui(self):
+        self.setWindowTitle(f'사용자 {self.user_id + 1} 정보')
+        layout = QVBoxLayout()
+        self.setMinimumWidth(300)
+        
+        # 틴더 스타일 적용
+        self.setStyleSheet("""
+            QDialog {
+                background-color: white;
+            }
+            QLabel {
+                color: #424242;
+                font-size: 13px;
+            }
+            QRadioButton {
+                padding: 5px;
+                color: #424242;
+            }
+            QRadioButton::indicator {
+                width: 18px;
+                height: 18px;
+            }
+            QPushButton {
+                padding: 10px;
+                border: none;
+                border-radius: 6px;
+                font-weight: bold;
+                min-height: 20px;
+            }
+        """)
+
+        # 성별 선택
+        gender_group = QVBoxLayout()
+        gender_label = QLabel('성별:')
+        gender_label.setStyleSheet("font-weight: bold;")
+        gender_group.addWidget(gender_label)
+        
+        self.gender_buttons = QButtonGroup()
+        gender_options = {1: "남성", 2: "여성"}
+        for value, text in gender_options.items():
+            radio = QRadioButton(text)
+            radio.setChecked(value == self.user_data["gender"])
+            self.gender_buttons.addButton(radio)
+            self.gender_buttons.setId(radio, value)
+            gender_group.addWidget(radio)
+        layout.addLayout(gender_group)
+
+        # 연령대 선택
+        age_group = QVBoxLayout()
+        age_label = QLabel('연령대:')
+        age_label.setStyleSheet("font-weight: bold;")
+        age_group.addWidget(age_label)
+        
+        self.age_buttons = QButtonGroup()
+        age_options = {1: "유소년", 2: "청중장년", 3: "노년"}
+        for value, text in age_options.items():
+            radio = QRadioButton(text)
+            radio.setChecked(value == self.user_data["age"])
+            self.age_buttons.addButton(radio)
+            self.age_buttons.setId(radio, value)
+            age_group.addWidget(radio)
+        layout.addLayout(age_group)
+
+        # 장애 유무
+        disability_group = QVBoxLayout()
+        disability_label = QLabel('장애 유무:')
+        disability_label.setStyleSheet("font-weight: bold;")
+        disability_group.addWidget(disability_label)
+        
+        self.disability_buttons = QButtonGroup()
+        disability_options = {1: "유", 2: "무"}
+        for value, text in disability_options.items():
+            radio = QRadioButton(text)
+            radio.setChecked(value == self.user_data["disability"])
+            self.disability_buttons.addButton(radio)
+            self.disability_buttons.setId(radio, value)
+            disability_group.addWidget(radio)
+        layout.addLayout(disability_group)
+
+        # 확인 버튼
+        confirm_btn = QPushButton('확인')
+        confirm_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #fe3c72;
+                color: white;
+            }
+            QPushButton:hover {
+                background-color: #ff4f81;
+            }
+        """)
+        confirm_btn.clicked.connect(self.accept)
+        layout.addWidget(confirm_btn)
+
+        self.setLayout(layout)
+
+    def get_user_info(self):
+        return {
+            "object_id": self.user_id,
+            "gender": self.gender_buttons.checkedId(),
+            "age": self.age_buttons.checkedId(),
+            "disability": self.disability_buttons.checkedId()
+        }
 
 if __name__ == '__main__':
     try:
